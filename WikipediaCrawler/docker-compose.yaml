@@ -1,0 +1,145 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 30s
+      timeout: 30s
+      retries: 3
+    restart: on-failure
+
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_INITDB_ROOT_USERNAME}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_INITDB_ROOT_PASSWORD}
+    ports:
+      - "27017:27017"
+    command: --quiet # less logs
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet" ]
+      interval: 10s
+      timeout: 60s
+      retries: 3
+      start_period: 20s
+    restart: on-failure
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    ports:
+      - "6379:6379"
+    command: [ "redis-server", "--appendonly", "yes" ]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: on-failure
+
+  startup:
+    build:
+      context: ./startup
+      dockerfile: Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+      - FETCHER_QUEUE=${FETCHER_QUEUE}
+      - PARSER_QUEUE=${PARSER_QUEUE}
+      - FILTER_QUEUE=${FILTER_QUEUE}
+    restart: "no"
+
+  fetcher:
+    build: ./fetcher
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      startup:
+        condition: service_completed_successfully
+    environment:
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+      - MONGO_URL=${MONGO_URL}
+      - IN_QUEUE=${FETCHER_QUEUE}
+      - OUT_QUEUE=${PARSER_QUEUE}
+      - LOG_LEVEL=INFO
+    develop: # rebuild and restart container on changes
+      watch:
+        - action: sync+restart
+          path: ./fetcher/app
+          target: /app
+    deploy:
+      mode: replicated
+      replicas: ${FETCHER_REPLICAS}
+    volumes:
+      - ./html_pages:/app/html_pages
+      # - ./fetcher/app:/app
+    restart: on-failure
+  parser:
+    build: ./parser
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      startup:
+        condition: service_completed_successfully
+    environment:
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+      - IN_QUEUE=${PARSER_QUEUE}
+      - OUT_QUEUE=${FILTER_QUEUE}
+      - LOG_LEVEL=INFO
+    develop: # rebuild and restart container on changes
+      watch:
+        - action: sync+restart
+          path: ./parser/app
+          target: /app
+    restart: on-failure
+
+  filter:
+    build: ./filter
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      startup:
+        condition: service_completed_successfully
+    environment:
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+      - IN_QUEUE=${FILTER_QUEUE}
+      - OUT_QUEUE=${FETCHER_QUEUE}
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      - LOG_LEVEL=INFO
+    develop: # rebuild and restart container on changes
+      watch:
+        - action: sync+restart
+          path: ./filter/app
+          target: /app
+    restart: on-failure
+
+volumes:
+  mongodb_data:
+  rabbitmq_data:
+  redis_data:
