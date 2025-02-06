@@ -3,6 +3,8 @@ import os
 from bs4 import BeautifulSoup
 from hdfs import InsecureClient
 
+from utils.utils import sanitize_filename
+
 
 class Converter:
     def __init__(self, file_path):
@@ -12,7 +14,7 @@ class Converter:
 
         # Create a BeautifulSoup object from the HTML content
         self.soup = BeautifulSoup(html_content, "html.parser")
-        self.file_name = os.path.splitext(os.path.basename(file_path))[0]
+        self.file_name = sanitize_filename(os.path.splitext(os.path.basename(file_path))[0])
 
     def extract_text(self):
         """Extract clean text from the HTML."""
