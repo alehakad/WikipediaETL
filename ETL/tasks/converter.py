@@ -39,7 +39,7 @@ class Converter:
 
 if __name__ == "__main__":
     # Example usage with a BeautifulSoup object
-    html_path = "../WikipediaCrawler/html_pages/en.wikipedia.org_wiki_Agriculture.html"
+    html_path = "../../WikipediaCrawler/html_pages/en.wikipedia.org_wiki_Agriculture.html"
 
     converter = Converter(html_path)  # Pass the BeautifulSoup object
     clean_text = converter.extract_text()

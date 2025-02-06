@@ -108,7 +108,7 @@ class Categorizer:
 if __name__ == "__main__":
     create_tables_if_not_exists()
     # Example usage with a BeautifulSoup object
-    file_path = "../WikipediaCrawler/html_pages/en.wikipedia.org_wiki_Agriculture.html"
+    file_path = "../../WikipediaCrawler/html_pages/en.wikipedia.org_wiki_Agriculture.html"
 
     categorizer = Categorizer(file_path)  # Pass the file path
     categories_list = categorizer.extract_categories()
