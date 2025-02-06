@@ -3,12 +3,14 @@ import sys
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.decorators import task
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from tasks.categorizer import Categorizer
 from tasks.converter import Converter
+
+html_files_folder = "../WikipediaCrawler/html_pages"
 
 default_args = {
     'owner': 'airflow',
@@ -18,36 +20,15 @@ default_args = {
 }
 
 
-def process_and_save_categories(file_path):
-    """Extract categories from HTML and save to MySQL."""
-    try:
-        categorizer = Categorizer(file_path)  # Initialize Categorizer with the file path
-        categories = categorizer.extract_categories()  # Extract categories
-        print(f"Categories extracted: {categories}")
+def get_unprocessed_files():
+    """Gets list of all unprocessed files from folder """
 
-        # Write the categories to MySQL (assuming a method for that in Categorizer)
-        categorizer.load_to_sql(categories)
+    unprocessed_files = []
+    for file_name in os.listdir(html_files_folder):
+        file_path = os.path.join(html_files_folder, file_name)
+        unprocessed_files.append(file_path)
 
-        return categories
-    except Exception as e:
-        print(f"Error in processing and saving categories: {e}")
-        raise
-
-
-def process_and_save_text(file_path):
-    """Extract clean text from HTML and save to HDFS."""
-    try:
-        converter = Converter(file_path)  # Initialize Converter with the file path
-        text = converter.extract_text()  # Extract clean text
-        print(f"Text extracted: {text}")
-
-        # Write the text to HDFS (assuming a method for that in Converter)
-        converter.save_to_hdfs(text)
-
-        return text
-    except Exception as e:
-        print(f"Error in processing and saving text: {e}")
-        raise
+    return unprocessed_files
 
 
 with DAG(
@@ -57,23 +38,38 @@ with DAG(
         schedule_interval='*/10 * * * *',  # Runs every 10 minutes
         catchup=False,
 ) as dag:
-    html_files_folder = "../WikipediaCrawler/html_pages"
-    html_files = [file for file in os.listdir(html_files_folder) if file.endswith(".html")]
-    for i, file in enumerate(html_files):
-        file_path = os.path.join(html_files_folder, file)
+    @task
+    def process_and_save_categories(file_path):
+        """Extract categories from HTML and save to MySQL."""
+        try:
+            print(f"process_and_save_categories for {file_path}")
+            categorizer = Categorizer(file_path)
+            categories = categorizer.extract_categories()
+            categorizer.load_to_sql(categories)
+            return categories
+        except Exception as e:
+            print(f"Error in processing and saving categories: {e}")
+            raise
 
-        # Define the tasks using PythonOperator
-        process_categories_task = PythonOperator(
-            task_id=f'process_and_save_categories_{i}',
-            python_callable=process_and_save_categories,
-            op_args=[file_path]
-        )
 
-        process_text_task = PythonOperator(
-            task_id=f'process_and_save_text_{i}',
-            python_callable=process_and_save_text,
-            op_args=[file_path]
-        )
+    @task
+    def process_and_save_text(file_path):
+        """Extract clean text from HTML and save to HDFS."""
+        try:
+            print(f"process_and_save_text for {file_path}")
+            converter = Converter(file_path)
+            text = converter.extract_text()
+            converter.save_to_hdfs(text)
+            return text
+        except Exception as e:
+            print(f"Error in processing and saving text: {e}")
+            raise
 
-    # Set task dependencies
-    # process_categories_task >> process_text_task  # Task 2 runs after Task 1
+
+    html_files = get_unprocessed_files()
+
+    categories_tasks = process_and_save_categories.expand(file_path=html_files)
+    text_tasks = process_and_save_text.expand(file_path=html_files)
+
+    # Set dependencies: process categories before processing text
+    # categories_tasks >> text_tasks
