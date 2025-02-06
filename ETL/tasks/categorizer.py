@@ -1,3 +1,4 @@
+import logging
 import os
 
 from bs4 import BeautifulSoup
@@ -11,6 +12,14 @@ load_dotenv()
 # Get the DATABASE_URL from the .env file
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Configure the logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
 # Check if the DATABASE_URL is loaded properly
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL not found in the environment variables!")
@@ -47,7 +56,7 @@ class Category(Base):
 def create_tables_if_not_exists():
     # Create the table in the database if it doesn't already exist
     Base.metadata.create_all(engine)
-    print(f"Table 'categories_table' created or already exists.")
+    logging.info(f"Table 'categories_table' created or already exists.")
 
 
 class Categorizer:
@@ -80,7 +89,7 @@ class Categorizer:
 
     def load_to_sql(self, categories):
         """Write the categories to MySQL using SQLAlchemy."""
-        print(f"Categories loaded to MySQL: {categories}")
+        logging.info(f"Categories loaded for {self.file_path} to MySQL: {categories}")
 
         # Create an engine and session
         Session = sessionmaker(bind=engine)

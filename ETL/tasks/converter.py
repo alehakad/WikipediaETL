@@ -1,9 +1,19 @@
+import logging
 import os
 
 from bs4 import BeautifulSoup
 from hdfs import InsecureClient
 
-from utils.utils import sanitize_filename
+from .utils.utils import sanitize_filename
+
+# Configure the logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
 
 
 class Converter:
@@ -36,7 +46,7 @@ class Converter:
         with client.write(hdfs_path, overwrite=True) as writer:
             writer.write(text)
 
-        print(f"Text saved to HDFS at {hdfs_path}")
+        logging.info(f"Text saved to HDFS at {hdfs_path}")
 
 
 if __name__ == "__main__":
@@ -47,4 +57,4 @@ if __name__ == "__main__":
     clean_text = converter.extract_text()
     converter.save_to_hdfs(clean_text)
 
-    print(clean_text)
+    logging.debug(clean_text)
