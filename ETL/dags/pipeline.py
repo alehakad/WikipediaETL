@@ -57,18 +57,23 @@ with DAG(
         schedule_interval='*/10 * * * *',  # Runs every 10 minutes
         catchup=False,
 ) as dag:
-    # Define the tasks using PythonOperator
-    process_categories_task = PythonOperator(
-        task_id='process_and_save_categories',
-        python_callable=process_and_save_categories,
-        op_args=["../../WikipediaCrawler/html_pages/en.wikipedia.org_wiki_Agriculture.html"]
-    )
+    html_files_folder = "../WikipediaCrawler/html_pages"
+    html_files = [file for file in os.listdir(html_files_folder) if file.endswith(".html")]
+    for i, file in enumerate(html_files):
+        file_path = os.path.join(html_files_folder, file)
 
-    process_text_task = PythonOperator(
-        task_id='process_and_save_text',
-        python_callable=process_and_save_text,
-        op_args=["../../WikipediaCrawler/html_pages/en.wikipedia.org_wiki_Agriculture.html"]
-    )
+        # Define the tasks using PythonOperator
+        process_categories_task = PythonOperator(
+            task_id=f'process_and_save_categories_{i}',
+            python_callable=process_and_save_categories,
+            op_args=[file_path]
+        )
+
+        process_text_task = PythonOperator(
+            task_id=f'process_and_save_text_{i}',
+            python_callable=process_and_save_text,
+            op_args=[file_path]
+        )
 
     # Set task dependencies
-    process_categories_task >> process_text_task  # Task 2 runs after Task 1
+    # process_categories_task >> process_text_task  # Task 2 runs after Task 1
