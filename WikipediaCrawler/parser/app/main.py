@@ -21,7 +21,7 @@ class Parser:
             parsed_url = urlparse(url)
 
             # Check if the domain belongs to Wikipedia
-            if parsed_url.netloc.endswith("wikipedia.org"):
+            if parsed_url.netloc.endswith("en.wikipedia.org"):
                 # Normalize the URL
                 normalized_path = parsed_url.path.rstrip("/")  # Remove trailing slash
                 normalized_url = urlunparse((
