@@ -33,7 +33,7 @@ def spark_jobs():
     html_files_folder = "../WikipediaCrawler/html_pages"
 
     # Task 1: Categorizer
-    @task.pyspark(conn_id="spark-local", config_kwargs={"spark.jars": mysql_driver_path})
+    @task.pyspark(config_kwargs={"spark.jars": mysql_driver_path})
     def run_categorizer(spark: SparkSession, sc: SparkContext):
         """
         Runs the Categorizer to extract categories from HTML files.
@@ -42,7 +42,7 @@ def spark_jobs():
         categorizer.save_to_sql()  # Process files
 
     # Task 2: Converter
-    @task.pyspark(conn_id="spark-local")
+    @task.pyspark()
     def run_converter(spark: SparkSession, sc: SparkContext):
         """
         Runs the Converter to extract text and save it in HDFS.
@@ -57,4 +57,4 @@ def spark_jobs():
 
 
 # Register DAG
-dag = spark_jobs()
+spark_jobs()

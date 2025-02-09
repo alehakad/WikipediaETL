@@ -80,7 +80,7 @@ class Categorizer:
         extract_categories_udf = udf(self.extract_categories, ArrayType(StringType()))
 
         # read htmls, add name of file
-        categories_df = self.spark.read.text(html_dir, wholetext=True).withColumn("file_path", input_file_name())
+        categories_df = self.spark.read.text(self.html_dir, wholetext=True).withColumn("file_path", input_file_name())
         # clean file_name
         categories_df = categories_df.withColumn("file_name", clean_name_udf("file_path"))
         # add categories
