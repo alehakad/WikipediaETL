@@ -3,13 +3,12 @@ import os
 
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, input_file_name, to_json, udf
 from pyspark.sql.types import ArrayType, StringType
 from sqlalchemy import Column, Integer, JSON, String, create_engine
 from sqlalchemy.orm import declarative_base
 
-from utils.utils import sanitize_filename
+from .utils.utils import sanitize_filename
 
 load_dotenv()
 
@@ -47,15 +46,12 @@ def create_tables():
     logging.info("Table 'pages_categories' created or already exists.")
 
 
-mysql_driver_path = "/usr/share/java/mysql-connector-java-9.2.0.jar"
-
-
 # Run on startup
 class Categorizer:
-    def __init__(self, html_dir):
+    def __init__(self, spark, html_dir):
         """Initialize with the file path of the HTML."""
-        self.spark = SparkSession.builder.appName("HTMLCategoryExtraction").config("spark.jars",
-                                                                                   mysql_driver_path).getOrCreate()
+        self.spark = spark  # SparkSession.builder.appName("HTMLCategoryExtraction").config("spark.jars",
+        # mysql_driver_path).getOrCreate()
         self.html_dir = html_dir
         self.mysql_url = f"jdbc:mysql://{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}"
         self.mysql_properties = {

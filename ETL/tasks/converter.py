@@ -3,11 +3,10 @@ import os
 
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from pyspark.sql import SparkSession
 from pyspark.sql.functions import input_file_name, udf
 from pyspark.sql.types import StringType
 
-from utils.utils import sanitize_filename
+from .utils.utils import sanitize_filename
 
 # Configure the logging
 logging.basicConfig(
@@ -25,12 +24,12 @@ HADOOP_PORT = os.getenv("HADOOP_PORT", 9000)
 
 
 class Converter:
-    def __init__(self, html_dir):
+    def __init__(self, spark, html_dir):
         """Initialize with the file path of the HTML."""
         self.html_dir = html_dir
-        self.spark = SparkSession.builder \
-            .appName("ExtractHtmlText") \
-            .getOrCreate()
+        self.spark = spark  # SparkSession.builder \
+        #     .appName("ExtractHtmlText") \
+        #     .getOrCreate()
 
     @staticmethod
     def extract_text(html):
