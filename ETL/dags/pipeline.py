@@ -23,7 +23,7 @@ mysql_driver_path = "/usr/share/java/mysql-connector-java-9.2.0.jar"
 @dag(
     dag_id="process_html",
     default_args=default_args,
-    schedule=None,  # Manually triggered
+    schedule=None,  # TODO: run every 10 mins schedule_interval = '*/10 * * * *'
     catchup=False
 )
 def spark_jobs():
