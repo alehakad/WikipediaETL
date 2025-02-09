@@ -2,9 +2,12 @@ import logging
 import os
 
 from bs4 import BeautifulSoup
-from hdfs import InsecureClient
+from dotenv import load_dotenv
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import input_file_name, udf
+from pyspark.sql.types import StringType
 
-from .utils.utils import sanitize_filename
+from utils.utils import sanitize_filename
 
 # Configure the logging
 logging.basicConfig(
@@ -15,46 +18,52 @@ logging.basicConfig(
     ]
 )
 
+load_dotenv()
+
+HADOOP_HOST = os.getenv("HADOOP_HOST", "localhost")
+HADOOP_PORT = os.getenv("HADOOP_PORT", 9000)
+
 
 class Converter:
-    def __init__(self, file_path):
+    def __init__(self, html_dir):
         """Initialize with the file path of the HTML."""
-        with open(file_path, "r", encoding="utf-8") as file:
-            html_content = file.read()
+        self.html_dir = html_dir
+        self.spark = SparkSession.builder \
+            .appName("ExtractHtmlText") \
+            .getOrCreate()
 
-        # Create a BeautifulSoup object from the HTML content
-        self.soup = BeautifulSoup(html_content, "html.parser")
-        self.file_name = sanitize_filename(os.path.splitext(os.path.basename(file_path))[0])
-
-    def extract_text(self):
+    @staticmethod
+    def extract_text(html):
         """Extract clean text from the HTML."""
+        soup = BeautifulSoup(html, "html.parser")
         # Remove unwanted tags
-        for element in self.soup(["script", "style", "meta", "head", "title", "noscript"]):
+        for element in soup(["script", "style", "meta", "head", "title", "noscript"]):
             element.extract()
 
         # Return clean text
-        return self.soup.get_text(separator=" ", strip=True)
+        return soup.get_text(separator=" ", strip=True)
 
-    def save_to_hdfs(self, text):
+    def save_to_hdfs(self):
         """Saves the given text to a file in HDFS."""
-        # Connect to HDFS
-        client = InsecureClient('http://localhost:50070', user='hadoop')  # Replace with your HDFS URL
+        extract_text_udf = udf(self.extract_text, StringType())
+        clean_name_udf = udf(sanitize_filename, StringType())
 
-        hdfs_path = f'/user/hadoop/{self.file_name}.txt'
+        html_df = self.spark.read.text(self.html_dir, wholetext=True).withColumn("file_path", input_file_name())
 
-        # Save text to a file in HDFS
-        with client.write(hdfs_path, overwrite=True) as writer:
-            writer.write(text)
+        # clean file_name
+        html_df = html_df.withColumn("file_name", clean_name_udf("file_path"))
 
-        logging.info(f"Text saved to HDFS at {hdfs_path}")
+        html_df = html_df.withColumn("extracted_text", extract_text_udf(html_df["value"])).select("file_name",
+                                                                                                  "extracted_text")
+
+        output_path = f"hdfs://{HADOOP_HOST}:{HADOOP_PORT}/user/html_texts/"
+        html_df.write.mode("overwrite").parquet(output_path)
+
+        logging.info(f"Text saved to HDFS")
 
 
 if __name__ == "__main__":
-    # Example usage with a BeautifulSoup object
-    html_path = "../../WikipediaCrawler/html_pages/en.wikipedia.org_wiki_Agriculture.html"
+    html_dir = "../../WikipediaCrawler/html_pages"
 
-    converter = Converter(html_path)  # Pass the BeautifulSoup object
-    clean_text = converter.extract_text()
-    converter.save_to_hdfs(clean_text)
-
-    logging.debug(clean_text)
+    converter = Converter(html_dir)  # Pass the BeautifulSoup object
+    converter.save_to_hdfs()

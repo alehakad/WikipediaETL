@@ -4,12 +4,13 @@ import os
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, input_file_name, regexp_replace, to_json, udf
+from pyspark.sql.functions import col, input_file_name, to_json, udf
 from pyspark.sql.types import ArrayType, StringType
 from sqlalchemy import Column, Integer, JSON, String, create_engine
 from sqlalchemy.orm import declarative_base
 
-# Load environment variables from .env file
+from utils.utils import sanitize_filename
+
 load_dotenv()
 
 MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
@@ -37,7 +38,7 @@ class PageCategory(Base):
     __tablename__ = 'pages_categories'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    page_path = Column(String(500), nullable=False, unique=True)  # VARCHAR(1000)
+    file_name = Column(String(500), nullable=False, unique=True)  # VARCHAR(1000)
     categories = Column(JSON, nullable=False)  # JSON format
 
 
@@ -79,9 +80,13 @@ class Categorizer:
 
     def process_html_files(self):
         """Reads all HTML files, extracts categories, and returns a DataFrame."""
+        clean_name_udf = udf(sanitize_filename, StringType())
         extract_categories_udf = udf(self.extract_categories, ArrayType(StringType()))
+
         # read htmls, add name of file
-        categories_df = self.spark.read.text(html_dir, wholetext=True).withColumn("page_path", input_file_name())
+        categories_df = self.spark.read.text(html_dir, wholetext=True).withColumn("file_path", input_file_name())
+        # clean file_name
+        categories_df = categories_df.withColumn("file_name", clean_name_udf("file_path"))
         # add categories
         categories_df = categories_df.withColumn("categories", extract_categories_udf(categories_df["value"]))
 
@@ -89,15 +94,14 @@ class Categorizer:
 
     def save_to_sql(self):
         """Saves extracted data to MySQL."""
-        # Process HTML files and extract categories
+        # process HTML files and extract categories
         categories_df = self.process_html_files()
 
         # convert categories to JSON and clean page_path
-        mysql_df = categories_df.withColumn("categories", to_json(col("categories"))) \
-            .withColumn("page_path", regexp_replace(col("page_path"), "file://", ""))
+        mysql_df = categories_df.withColumn("categories", to_json(col("categories")))
 
-        # Write the DataFrame to MySQL
-        mysql_df.select("page_path", "categories").write \
+        # write the DataFrame to MySQL
+        mysql_df.select("file_name", "categories").write \
             .jdbc(url=self.mysql_url,
                   table="pages_categories",
                   mode="append",
@@ -108,7 +112,6 @@ class Categorizer:
 
 if __name__ == "__main__":
     create_tables()
-    # Example usage with a BeautifulSoup object
     html_dir = "../../WikipediaCrawler/html_pages"
 
     categorizer = Categorizer(html_dir)  # Pass the file path
