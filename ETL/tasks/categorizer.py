@@ -1,13 +1,14 @@
 import logging
 import os
+from datetime import datetime
 
 from airflow.exceptions import AirflowException
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, input_file_name, size, split, to_json, udf
-from pyspark.sql.types import ArrayType, StringType
-from sqlalchemy import Column, Integer, JSON, String, create_engine
+from pyspark.sql.types import ArrayType, DateType, StringType
+from sqlalchemy import Column, Date, Integer, JSON, String, create_engine
 from sqlalchemy.orm import declarative_base
 
 from utils import sanitize_filename
@@ -42,6 +43,7 @@ class PageCategory(Base):
     file_name = Column(String(500), nullable=False, unique=True)  # VARCHAR(1000)
     categories = Column(JSON, nullable=False)  # JSON format
     word_count = Column(Integer, nullable=False, default=0)
+    last_edited_date = Column(Date, nullable=True)
 
 
 def create_tables():
@@ -76,10 +78,32 @@ class Categorizer:
 
         return categories
 
+    @staticmethod
+    def extract_last_edited_date(html):
+        """Find last edited date"""
+        soup = BeautifulSoup(html, 'html.parser')
+        last_edited = soup.find('li', id='footer-info-lastmod')
+        last_edited_date = None
+
+        if last_edited:
+            last_edited_text = last_edited.get_text(strip=True)
+            last_edited_text = last_edited_text.replace(" (UTC)", "")
+            date_str = last_edited_text.replace("This page was last edited on ", "").split(",")[0]
+
+            try:
+                last_edited_date = datetime.strptime(date_str, '%d %B %Y').date()
+                logging.debug(f"Last time edited (date only): {last_edited_date}")
+            except ValueError as e:
+                logging.error(f"Error parsing date: {e}")
+        else:
+            logging.debug("Couldn't find last time edited.")
+        return last_edited_date
+
     def process_html_files(self):
         """Reads all HTML files, extracts categories, and returns a DataFrame."""
         clean_name_udf = udf(sanitize_filename, StringType())
         extract_categories_udf = udf(self.extract_categories, ArrayType(StringType()))
+        extract_dates_udf = udf(self.extract_last_edited_date, DateType())
 
         # read htmls, add name of file
         categories_df = self.spark.read.text(self.html_dir, wholetext=True).withColumn("file_path", input_file_name())
@@ -89,6 +113,8 @@ class Categorizer:
         categories_df = categories_df.withColumn("categories", extract_categories_udf(categories_df["value"]))
         # add word count
         categories_df = categories_df.withColumn("word_count", size(split(categories_df["value"], " ")))
+        # add last edited date
+        categories_df = categories_df.withColumn("last_edited_date", extract_dates_udf(categories_df["value"]))
 
         return categories_df
 
@@ -102,7 +128,7 @@ class Categorizer:
             mysql_df = categories_df.withColumn("categories", to_json(col("categories")))
 
             # write the DataFrame to MySQL
-            mysql_df.select("file_name", "categories", "word_count").write \
+            mysql_df.select("file_name", "categories", "word_count", "last_edited_date").write \
                 .jdbc(url=self.mysql_url,
                       table="pages_categories",
                       mode="append",
