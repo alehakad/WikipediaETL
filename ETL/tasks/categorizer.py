@@ -1,6 +1,7 @@
 import logging
 import os
 
+from airflow.exceptions import AirflowException
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from pyspark.sql.functions import col, input_file_name, to_json, udf
@@ -89,21 +90,27 @@ class Categorizer:
         return categories_df
 
     def save_to_sql(self):
-        """Saves extracted data to MySQL."""
+        """Saves extracted data to MySQL, returns processed html."""
         # process HTML files and extract categories
-        categories_df = self.process_html_files()
+        try:
+            categories_df = self.process_html_files()
 
-        # convert categories to JSON and clean page_path
-        mysql_df = categories_df.withColumn("categories", to_json(col("categories")))
+            # convert categories to JSON and clean page_path
+            mysql_df = categories_df.withColumn("categories", to_json(col("categories")))
 
-        # write the DataFrame to MySQL
-        mysql_df.select("file_name", "categories").write \
-            .jdbc(url=self.mysql_url,
-                  table="pages_categories",
-                  mode="append",
-                  properties=self.mysql_properties)
+            # write the DataFrame to MySQL
+            mysql_df.select("file_name", "categories").write \
+                .jdbc(url=self.mysql_url,
+                      table="pages_categories",
+                      mode="append",
+                      properties=self.mysql_properties)
 
-        logging.info("Html pages with categories saved successfully to MySQL.")
+            logging.info("Html pages with categories saved successfully to MySQL.")
+
+            return mysql_df.select("file_path").rdd.flatMap(lambda x: x).collect()
+        except Exception as e:
+            logging.error("Error processing categories", e)
+            raise AirflowException(f"Error processing categories {e}")
 
 
 if __name__ == "__main__":

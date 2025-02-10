@@ -1,6 +1,7 @@
 import logging
 import os
 
+from airflow.exceptions import AirflowException
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from pyspark.sql.functions import input_file_name, udf
@@ -44,21 +45,25 @@ class Converter:
 
     def save_to_hdfs(self):
         """Saves the given text to a file in HDFS."""
-        extract_text_udf = udf(self.extract_text, StringType())
-        clean_name_udf = udf(sanitize_filename, StringType())
+        try:
+            extract_text_udf = udf(self.extract_text, StringType())
+            clean_name_udf = udf(sanitize_filename, StringType())
 
-        html_df = self.spark.read.text(self.html_dir, wholetext=True).withColumn("file_path", input_file_name())
+            html_df = self.spark.read.text(self.html_dir, wholetext=True).withColumn("file_path", input_file_name())
 
-        # clean file_name
-        html_df = html_df.withColumn("file_name", clean_name_udf("file_path"))
+            # clean file_name
+            html_df = html_df.withColumn("file_name", clean_name_udf("file_path"))
 
-        html_df = html_df.withColumn("extracted_text", extract_text_udf(html_df["value"])).select("file_name",
-                                                                                                  "extracted_text")
+            html_df = html_df.withColumn("extracted_text", extract_text_udf(html_df["value"])).select("file_name",
+                                                                                                      "extracted_text")
 
-        output_path = f"hdfs://{HADOOP_HOST}:{HADOOP_PORT}/user/html_texts/"
-        html_df.write.mode("overwrite").parquet(output_path)
+            output_path = f"hdfs://{HADOOP_HOST}:{HADOOP_PORT}/user/html_texts/"
+            html_df.write.mode("overwrite").parquet(output_path)
 
-        logging.info(f"Text saved to HDFS")
+            logging.info(f"Text saved to HDFS")
+        except Exception as e:
+            logging.error("Error extracting text", e)
+            raise AirflowException(f"Error extracting text: {str(e)}")
 
 
 if __name__ == "__main__":
