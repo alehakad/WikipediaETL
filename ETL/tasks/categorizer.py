@@ -4,12 +4,13 @@ import os
 from airflow.exceptions import AirflowException
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from pyspark.sql.functions import col, input_file_name, to_json, udf
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, input_file_name, size, split, to_json, udf
 from pyspark.sql.types import ArrayType, StringType
 from sqlalchemy import Column, Integer, JSON, String, create_engine
 from sqlalchemy.orm import declarative_base
 
-from .utils.utils import sanitize_filename
+from utils import sanitize_filename
 
 load_dotenv()
 
@@ -40,6 +41,7 @@ class PageCategory(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     file_name = Column(String(500), nullable=False, unique=True)  # VARCHAR(1000)
     categories = Column(JSON, nullable=False)  # JSON format
+    word_count = Column(Integer, nullable=False, default=0)
 
 
 def create_tables():
@@ -51,8 +53,7 @@ def create_tables():
 class Categorizer:
     def __init__(self, spark, html_dir):
         """Initialize with the file path of the HTML."""
-        self.spark = spark  # SparkSession.builder.appName("HTMLCategoryExtraction").config("spark.jars",
-        # mysql_driver_path).getOrCreate()
+        self.spark = spark
         self.html_dir = html_dir
         self.mysql_url = f"jdbc:mysql://{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}"
         self.mysql_properties = {
@@ -86,6 +87,8 @@ class Categorizer:
         categories_df = categories_df.withColumn("file_name", clean_name_udf("file_path"))
         # add categories
         categories_df = categories_df.withColumn("categories", extract_categories_udf(categories_df["value"]))
+        # add word count
+        categories_df = categories_df.withColumn("word_count", size(split(categories_df["value"], " ")))
 
         return categories_df
 
@@ -99,7 +102,7 @@ class Categorizer:
             mysql_df = categories_df.withColumn("categories", to_json(col("categories")))
 
             # write the DataFrame to MySQL
-            mysql_df.select("file_name", "categories").write \
+            mysql_df.select("file_name", "categories", "word_count").write \
                 .jdbc(url=self.mysql_url,
                       table="pages_categories",
                       mode="append",
@@ -116,6 +119,8 @@ class Categorizer:
 if __name__ == "__main__":
     create_tables()
     html_dir = "../../WikipediaCrawler/html_pages"
-
-    categorizer = Categorizer(html_dir)  # Pass the file path
+    mysql_driver_path = "/usr/share/java/mysql-connector-java-9.2.0.jar"
+    spark_session = SparkSession.builder.appName("HTMLCategoryExtraction").config("spark.jars",
+                                                                                  mysql_driver_path).getOrCreate()
+    categorizer = Categorizer(spark_session, html_dir)  # Pass the file path
     categorizer.save_to_sql()
