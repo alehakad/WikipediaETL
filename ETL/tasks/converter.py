@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from pyspark.sql.functions import input_file_name, udf
 from pyspark.sql.types import StringType
 
-from utils import sanitize_filename
+from .utils import sanitize_filename
 
 # Configure the logging
 logging.basicConfig(

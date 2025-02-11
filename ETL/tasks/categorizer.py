@@ -11,7 +11,7 @@ from pyspark.sql.types import ArrayType, DateType, StringType
 from sqlalchemy import Column, Date, Integer, JSON, String, create_engine
 from sqlalchemy.orm import declarative_base
 
-from utils import sanitize_filename
+from .utils import sanitize_filename
 
 load_dotenv()
 
