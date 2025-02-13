@@ -1,79 +1,93 @@
 import os
 import sys
-from datetime import datetime, timedelta
-
-from airflow import DAG
-from airflow.operators.python import PythonOperator
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from pyspark import SparkContext
+from pyspark.sql import SparkSession
+from airflow.decorators import dag, task, task_group
+from airflow.exceptions import AirflowException
+from datetime import datetime
 from tasks.categorizer import Categorizer
 from tasks.converter import Converter
+import shutil
 
 default_args = {
-    'owner': 'airflow',
-    'start_date': datetime(2025, 2, 5),
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
+    "owner": "airflow",
+    "depends_on_past": False,
+    "start_date": datetime(2024, 2, 9),
+    "retries": 1,
 }
 
-
-def process_and_save_categories(file_path):
-    """Extract categories from HTML and save to MySQL."""
-    try:
-        categorizer = Categorizer(file_path)  # Initialize Categorizer with the file path
-        categories = categorizer.extract_categories()  # Extract categories
-        print(f"Categories extracted: {categories}")
-
-        # Write the categories to MySQL (assuming a method for that in Categorizer)
-        categorizer.load_to_sql(categories)
-
-        return categories
-    except Exception as e:
-        print(f"Error in processing and saving categories: {e}")
-        raise
+mysql_driver_path = "/usr/share/java/mysql-connector-java-9.2.0.jar"
 
 
-def process_and_save_text(file_path):
-    """Extract clean text from HTML and save to HDFS."""
-    try:
-        converter = Converter(file_path)  # Initialize Converter with the file path
-        text = converter.extract_text()  # Extract clean text
-        print(f"Text extracted: {text}")
-
-        # Write the text to HDFS (assuming a method for that in Converter)
-        converter.save_to_hdfs(text)
-
-        return text
-    except Exception as e:
-        print(f"Error in processing and saving text: {e}")
-        raise
-
-
-with DAG(
-        dag_id="html_processing_dag",
-        default_args=default_args,
-        description='A simple DAG to process HTML pages for categorization and text conversion',
-        schedule_interval='*/10 * * * *',  # Runs every 10 minutes
-        catchup=False,
-) as dag:
+@dag(
+    dag_id="process_html",
+    default_args=default_args,
+    schedule=None,  # TODO: run every 10 mins schedule_interval = '*/10 * * * *'
+    catchup=False,  # prevents DAG from running jobs for missed intervals
+    max_active_runs=1  # max number of dag active runs
+)
+def spark_jobs():
+    """
+       DAG to process HTML files with Spark in parallel using @task.pyspark.
+       """
     html_files_folder = "../WikipediaCrawler/html_pages"
-    html_files = [file for file in os.listdir(html_files_folder) if file.endswith(".html")]
-    for i, file in enumerate(html_files):
-        file_path = os.path.join(html_files_folder, file)
+    html_processed_files_folder = "../WikipediaCrawler/html_pages_processed"
 
-        # Define the tasks using PythonOperator
-        process_categories_task = PythonOperator(
-            task_id=f'process_and_save_categories_{i}',
-            python_callable=process_and_save_categories,
-            op_args=[file_path]
-        )
+    # Task 1: Categorizer
+    @task.pyspark(config_kwargs={"spark.jars": mysql_driver_path})
+    def run_categorizer(spark: SparkSession, sc: SparkContext):
+        """
+        Runs the Categorizer to extract categories from HTML files.
+        """
+        categorizer = Categorizer(spark, html_files_folder)  # Initialize Categorizer
+        processed_files = categorizer.save_to_sql()  # Process files
 
-        process_text_task = PythonOperator(
-            task_id=f'process_and_save_text_{i}',
-            python_callable=process_and_save_text,
-            op_args=[file_path]
-        )
+        return processed_files
 
-    # Set task dependencies
-    # process_categories_task >> process_text_task  # Task 2 runs after Task 1
+    # Task 2: Converter
+    @task.pyspark()
+    def run_converter(spark: SparkSession, sc: SparkContext):
+        """
+        Runs the Converter to extract text and save it in HDFS.
+        """
+        converter = Converter(spark, html_files_folder)  # Initialize Converter
+        converter.save_to_hdfs()  # Process files
+
+        return []
+
+    # task group to run both tasks in parallel
+    @task_group
+    def transform_htmls():
+        categorizer_files = run_categorizer()
+        converter_files = run_converter()
+
+        return categorizer_files, converter_files
+
+    # Task 3: move processed files to processed folder
+    @task
+    def move_files(categorizer_files: list[str], converter_files: list[str]):
+        """Moves all files processed to another folder"""
+        all_files_to_move = categorizer_files
+        for file_path in all_files_to_move:
+            try:
+                file_path = file_path.removeprefix("file://")  # remove spark prefix
+                if os.path.exists(file_path):
+                    file_name = os.path.basename(file_path)
+                    destination = os.path.join(html_processed_files_folder, file_name)
+                    shutil.move(file_path, destination)
+                    print(f"Moved {file_path} to {destination}")
+                else:
+                    print(f"File {file_path} does not exist!")
+            except Exception as e:
+                # print(f"Error moving file {file_path}: {str(e)}")
+                raise AirflowException(f"Error moving file {file_path}: {str(e)}")
+
+    task1_files, task2_files = transform_htmls()
+    move_files(task1_files, task2_files)
+
+
+# Register DAG
+spark_jobs()

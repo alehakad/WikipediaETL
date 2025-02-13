@@ -1,115 +1,152 @@
+import logging
 import os
+from datetime import datetime
 
+from airflow.exceptions import AirflowException
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from sqlalchemy import Column, ForeignKey, Integer, String, create_engine
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, input_file_name, size, split, to_json, udf
+from pyspark.sql.types import ArrayType, DateType, StringType
+from sqlalchemy import Column, Date, Integer, JSON, String, create_engine
+from sqlalchemy.orm import declarative_base
 
-# Load environment variables from .env file
+from utils import sanitize_filename
+
 load_dotenv()
 
-# Get the DATABASE_URL from the .env file
-DATABASE_URL = os.getenv("DATABASE_URL")
+MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
+MYSQL_DB = os.getenv("MYSQL_DB")
+MYSQL_USER = os.getenv("MYSQL_USER")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
+MYSQL_PORT = os.getenv("MYSQL_PORT")
 
-# Check if the DATABASE_URL is loaded properly
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL not found in the environment variables!")
-# Create the engine
+# Configure the logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ])
+
+DATABASE_URL = f"mysql+mysqlconnector://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}/{MYSQL_DB}"
+# Create engine and session
 engine = create_engine(DATABASE_URL, echo=True)
-
 Base = declarative_base()
 
 
-class Page(Base):
-    __tablename__ = 'pages_table'
+# Define table
+class PageCategory(Base):
+    __tablename__ = 'pages_categories'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    page_path = Column(String(255), nullable=False, unique=True)
-
-    categories = relationship("Category", back_populates="page")
-
-    def __init__(self, page_path):
-        self.page_path = page_path
+    file_name = Column(String(500), nullable=False, unique=True)  # VARCHAR(1000)
+    categories = Column(JSON, nullable=False)  # JSON format
+    word_count = Column(Integer, nullable=False, default=0)
+    last_edited_date = Column(Date, nullable=True)
 
 
-class Category(Base):
-    __tablename__ = 'categories_table'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    category = Column(String(255), nullable=False)
-    page_id = Column(Integer, ForeignKey('pages_table.id'), nullable=False)
-
-    # Relationship to the Page table
-    page = relationship("Page", back_populates="categories")
-
-
-# Define metadata and table structure
-def create_tables_if_not_exists():
-    # Create the table in the database if it doesn't already exist
+def create_tables():
     Base.metadata.create_all(engine)
-    print(f"Table 'categories_table' created or already exists.")
+    logging.info("Table 'pages_categories' created or already exists.")
 
 
+# Run on startup
 class Categorizer:
-    def __init__(self, file_path):
+    def __init__(self, spark, html_dir):
         """Initialize with the file path of the HTML."""
-        with open(file_path, "r", encoding="utf-8") as file:
-            html_content = file.read()
+        self.spark = spark
+        self.html_dir = html_dir
+        self.mysql_url = f"jdbc:mysql://{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}"
+        self.mysql_properties = {
+            "user": MYSQL_USER,
+            "password": MYSQL_PASSWORD,
+            "driver": "com.mysql.cj.jdbc.Driver"
+        }
 
-        # Create a BeautifulSoup object from the HTML content
-        self.soup = BeautifulSoup(html_content, "html.parser")
-        self.file_path = file_path
-
-    def extract_categories(self):
+    @staticmethod
+    def extract_categories(html):
         """Extract categories from the first <ul> inside mw-normal-catlinks."""
-        # Find the mw-normal-catlinks div
-        cat_links_div = self.soup.find("div", {"id": "mw-normal-catlinks"})
+        soup = BeautifulSoup(html, "html.parser")
+        cat_links_div = soup.find("div", {"id": "mw-normal-catlinks"})
 
         if not cat_links_div:
-            return []  # Return empty list if div is not found
+            return []  # Return empty categories
 
-        # Find the first <ul> inside this div
         ul = cat_links_div.find("ul")
-        if not ul:
-            return []  # Return empty list if no <ul> found
-
-        # Extract category names from <a> tags within <li> elements inside the <ul>
-        categories = [a.get_text(strip=True) for a in ul.find_all("a")]
+        categories = [a.get_text(strip=True) for a in ul.find_all("a")] if ul else []
 
         return categories
 
-    def load_to_sql(self, categories):
-        """Write the categories to MySQL using SQLAlchemy."""
-        print(f"Categories loaded to MySQL: {categories}")
+    @staticmethod
+    def extract_last_edited_date(html):
+        """Find last edited date"""
+        soup = BeautifulSoup(html, 'html.parser')
+        last_edited = soup.find('li', id='footer-info-lastmod')
+        last_edited_date = None
 
-        # Create an engine and session
-        Session = sessionmaker(bind=engine)
-        session = Session()
+        if last_edited:
+            last_edited_text = last_edited.get_text(strip=True)
+            last_edited_text = last_edited_text.replace(" (UTC)", "")
+            date_str = last_edited_text.replace("This page was last edited on ", "").split(",")[0]
 
-        # Check if the page exists in the pages table or create it
-        page = session.query(Page).filter_by(page_path=self.file_path).first()
-        if not page:
-            page = Page(page_path=self.file_path)
-            session.add(page)  # Add the page if it doesn't exist
-            session.commit()  # Commit to get the page ID
+            try:
+                last_edited_date = datetime.strptime(date_str, '%d %B %Y').date()
+                logging.debug(f"Last time edited (date only): {last_edited_date}")
+            except ValueError as e:
+                logging.error(f"Error parsing date: {e}")
+        else:
+            logging.debug("Couldn't find last time edited.")
+        return last_edited_date
 
-        # Insert categories into the table using ORM
-        for category in categories:
-            category_instance = Category(category=category, page=page)  # Reference the page instance
-            session.add(category_instance)  # Add the instance to the session
+    def process_html_files(self):
+        """Reads all HTML files, extracts categories, and returns a DataFrame."""
+        clean_name_udf = udf(sanitize_filename, StringType())
+        extract_categories_udf = udf(self.extract_categories, ArrayType(StringType()))
+        extract_dates_udf = udf(self.extract_last_edited_date, DateType())
 
-        # Commit the transaction
-        session.commit()
+        # read htmls, add name of file
+        categories_df = self.spark.read.text(self.html_dir, wholetext=True).withColumn("file_path", input_file_name())
+        # clean file_name
+        categories_df = categories_df.withColumn("file_name", clean_name_udf("file_path"))
+        # add categories
+        categories_df = categories_df.withColumn("categories", extract_categories_udf(categories_df["value"]))
+        # add word count
+        categories_df = categories_df.withColumn("word_count", size(split(categories_df["value"], " ")))
+        # add last edited date
+        categories_df = categories_df.withColumn("last_edited_date", extract_dates_udf(categories_df["value"]))
 
-        # Close the session
-        session.close()
+        return categories_df
+
+    def save_to_sql(self):
+        """Saves extracted data to MySQL, returns processed html."""
+        # process HTML files and extract categories
+        try:
+            categories_df = self.process_html_files()
+
+            # convert categories to JSON and clean page_path
+            mysql_df = categories_df.withColumn("categories", to_json(col("categories")))
+
+            # write the DataFrame to MySQL
+            mysql_df.select("file_name", "categories", "word_count", "last_edited_date").write \
+                .jdbc(url=self.mysql_url,
+                      table="pages_categories",
+                      mode="append",
+                      properties=self.mysql_properties)
+
+            logging.info("Html pages with categories saved successfully to MySQL.")
+
+            return mysql_df.select("file_path").rdd.flatMap(lambda x: x).collect()
+        except Exception as e:
+            logging.error("Error processing categories", e)
+            raise AirflowException(f"Error processing categories {e}")
 
 
 if __name__ == "__main__":
-    create_tables_if_not_exists()
-    # Example usage with a BeautifulSoup object
-    file_path = "../../WikipediaCrawler/html_pages/en.wikipedia.org_wiki_Agriculture.html"
-
-    categorizer = Categorizer(file_path)  # Pass the file path
-    categories_list = categorizer.extract_categories()
-    categorizer.load_to_sql(categories_list)
+    create_tables()
+    html_dir = "../../WikipediaCrawler/html_pages"
+    mysql_driver_path = "/usr/share/java/mysql-connector-java-9.2.0.jar"
+    spark_session = SparkSession.builder.appName("HTMLCategoryExtraction").config("spark.jars",
+                                                                                  mysql_driver_path).getOrCreate()
+    categorizer = Categorizer(spark_session, html_dir)  # Pass the file path
+    categorizer.save_to_sql()
