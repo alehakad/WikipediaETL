@@ -11,7 +11,7 @@ from pyspark.sql.types import ArrayType, DateType, StringType
 from sqlalchemy import Column, Date, ForeignKey, Integer, String, Table, create_engine
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
-from utils import sanitize_filename
+from .utils import sanitize_filename
 
 load_dotenv()
 
@@ -128,7 +128,7 @@ class Categorizer:
         extract_dates_udf = udf(self.extract_last_edited_date, DateType())
 
         # read htmls, add name of file
-        categories_df = self.spark.read.text(self.html_dir, wholetext=True).withColumn("file_path", input_file_name())
+        categories_df = self.spark.read.text(f"{self.html_dir}/*.html", wholetext=True).withColumn("file_path", input_file_name())
         # clean file_name
         categories_df = categories_df.withColumn("file_name", clean_name_udf("file_path"))
         # add categories
