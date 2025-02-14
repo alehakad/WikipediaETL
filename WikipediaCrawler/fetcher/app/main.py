@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime
 from typing import List
 from urllib.parse import urljoin
@@ -41,13 +42,23 @@ class Fetcher:
         """
         Saves the fetched HTML content to a local file.
         """
+        # sanitize filename
         sanitized_name = url.replace("http://", "").replace("https://", "").replace("/", "_")
+        sanitized_name = re.sub(r'[:/?&=]', '_', sanitized_name)
+
+        # check dir
+        os.makedirs(Fetcher.html_storage_path, exist_ok=True)
         file_path = os.path.join(Fetcher.html_storage_path, f"{sanitized_name}.html")
 
-        with open(file_path, "w", encoding="utf-8") as file:
-            file.write(html_content)
-        logger.info(f"Page {url} saved to local storage")
-        return file_path
+        # save file
+        try:
+            with open(file_path, "w", encoding="utf-8") as file:
+                file.write(html_content)
+            logger.info(f"Page {url} saved to local storage")
+            return file_path
+        except Exception as e:
+            logger.error(f"Failed to save {url}: {e}")
+            return None
 
     @staticmethod
     def find_last_modified_date(html_headers: dict) -> datetime | None:
