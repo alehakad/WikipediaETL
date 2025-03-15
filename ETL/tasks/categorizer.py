@@ -6,12 +6,12 @@ from airflow.exceptions import AirflowException
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, input_file_name, size, split, to_json, udf
+from pyspark.sql.functions import input_file_name, size, split, udf
 from pyspark.sql.types import ArrayType, DateType, StringType
-from sqlalchemy import Column, Date, Integer, JSON, String, create_engine
-from sqlalchemy.orm import declarative_base
+from sqlalchemy import Column, Date, ForeignKey, Integer, String, Table, create_engine
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
-from utils import sanitize_filename
+from .utils import sanitize_filename
 
 load_dotenv()
 
@@ -34,21 +34,43 @@ DATABASE_URL = f"mysql+mysqlconnector://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOS
 engine = create_engine(DATABASE_URL, echo=True)
 Base = declarative_base()
 
+# Define tables
+# pages and categories pairs
+page_category_association = Table(
+    'page_categories',
+    Base.metadata,
+    Column('page_id', Integer, ForeignKey('pages.id'), primary_key=True),
+    Column('category_id', Integer, ForeignKey('categories.id'), primary_key=True)
+)
 
-# Define table
-class PageCategory(Base):
-    __tablename__ = 'pages_categories'
+
+# pages table
+class Page(Base):
+    __tablename__ = 'pages'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    file_name = Column(String(500), nullable=False, unique=True)  # VARCHAR(1000)
-    categories = Column(JSON, nullable=False)  # JSON format
-    word_count = Column(Integer, nullable=False, default=0)
-    last_edited_date = Column(Date, nullable=True)
+    file_name = Column(String(500), nullable=False, unique=True)  # File name
+    word_count = Column(Integer, nullable=False, default=0)  # Word count
+    last_edited_date = Column(Date, nullable=True)  # Last edited date
+
+    # Many-to-Many relationship with categories
+    categories = relationship('Category', secondary=page_category_association, back_populates='pages')
+
+
+# category table
+class Category(Base):
+    __tablename__ = 'categories'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False, unique=True)  # Category name
+
+    # Many-to-Many relationship with pages
+    pages = relationship('Page', secondary=page_category_association, back_populates='categories')
 
 
 def create_tables():
     Base.metadata.create_all(engine)
-    logging.info("Table 'pages_categories' created or already exists.")
+    logging.info("Tables created or already exist.")
 
 
 # Run on startup
@@ -106,7 +128,7 @@ class Categorizer:
         extract_dates_udf = udf(self.extract_last_edited_date, DateType())
 
         # read htmls, add name of file
-        categories_df = self.spark.read.text(self.html_dir, wholetext=True).withColumn("file_path", input_file_name())
+        categories_df = self.spark.read.text(f"{self.html_dir}/*.html", wholetext=True).withColumn("file_path", input_file_name())
         # clean file_name
         categories_df = categories_df.withColumn("file_name", clean_name_udf("file_path"))
         # add categories
@@ -124,19 +146,50 @@ class Categorizer:
         try:
             categories_df = self.process_html_files()
 
-            # convert categories to JSON and clean page_path
-            mysql_df = categories_df.withColumn("categories", to_json(col("categories")))
+            # insert rows with sqlalchemy
+            data = categories_df.select("file_name", "categories", "word_count", "last_edited_date").collect()
 
-            # write the DataFrame to MySQL
-            mysql_df.select("file_name", "categories", "word_count", "last_edited_date").write \
-                .jdbc(url=self.mysql_url,
-                      table="pages_categories",
-                      mode="append",
-                      properties=self.mysql_properties)
+            Session = sessionmaker(bind=engine)
+            session = Session()
 
-            logging.info("Html pages with categories saved successfully to MySQL.")
+            # insert pages
+            for row in data:
+                file_name = row["file_name"]
+                word_count = row["word_count"]
+                last_edited_date = row["last_edited_date"]
+                page = session.query(Page).filter_by(file_name=file_name).first()
+                if not page:
+                    page = Page(file_name=file_name, word_count=word_count, last_edited_date=last_edited_date)
+                    session.add(page)
+            session.commit()
 
-            return mysql_df.select("file_path").rdd.flatMap(lambda x: x).collect()
+            # insert categories
+            for row in data:
+                categories = row["categories"]
+
+                for category_name in categories:
+                    category = session.query(Category).filter_by(name=category_name).first()
+                    if not category:
+                        category = Category(name=category_name)
+                        session.add(category)
+            session.commit()
+
+            # insert pages, categories pairs
+            for row in data:
+                file_name = row["file_name"]
+                categories = row["categories"]
+                page = session.query(Page).filter_by(file_name=file_name).first()
+                if page:
+                    for category_name in categories:
+                        category = session.query(Category).filter_by(name=category_name).first()
+                        if category:
+                            page.categories.append(category)
+            session.commit()
+            session.close()
+            logging.info("HTML pages with categories saved successfully to MySQL.")
+
+            return [row["file_name"] for row in data]
+
         except Exception as e:
             logging.error("Error processing categories", e)
             raise AirflowException(f"Error processing categories {e}")
