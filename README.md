@@ -1,6 +1,6 @@
 # Wikipedia ETL Project
 
-![Project Design](project_design.jpg)
+![Project Design](project-design.jpg)
 
 ## Overview
 This project is designed to simulate the full lifecycle of a data engineer work. It consists of multiple stages, including data generation, transformation, storage, and visualization. The project is built in a microservices structure with RabbitMQ for communication and leverages PySpark, Airflow, MySQL, HDFS, and Apache Superset for data analysis.
